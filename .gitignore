@@ -1,0 +1,11 @@
+# Secrets and local overrides never belong in the repo.
+.env
+.env.*
+*.local.conf
+# Editor / OS noise
+.vscode/
+*.swp
+.DS_Store
+# Python bytecode
+__pycache__/
+*.pyc

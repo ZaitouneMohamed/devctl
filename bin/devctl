@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# devctl — Local DevOps Management System. Entry point: locate the repo, load core, dispatch.
+set -Eeuo pipefail
+
+# Resolve the real location of this file (works through the ~/.local/bin symlink),
+# so libraries are always loaded from the repository and never from $PWD or $PATH.
+DEVCTL_ROOT="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd -P)"
+readonly DEVCTL_ROOT
+
+# shellcheck source=lib/core/bootstrap.sh
+source "$DEVCTL_ROOT/lib/core/bootstrap.sh"
+
+devctl_main "$@"

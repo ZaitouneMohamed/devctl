@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=devctl Dashboard
+GenericName=Local DevOps Dashboard
+Comment=Open the devctl dashboard (sites, databases, services)
+Exec=@DEVCTL_BIN@ dashboard
+Icon=devctl
+Terminal=false
+Categories=Development;
+Keywords=devctl;devops;docker;dashboard;
+StartupNotify=false
+X-Devctl-Managed=true

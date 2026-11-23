@@ -1,0 +1,5 @@
+
+# Vite dev server for {{NAME}} (live reload over HTTPS; only while `devctl site dev` runs).
+{{DOMAIN}}:{{VITE_PUBLIC}} {
+	reverse_proxy 127.0.0.1:{{VITE_INTERNAL}}
+}

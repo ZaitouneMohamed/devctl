@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>devctl</title>
+  <link rel="icon" href="/static/devctl.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <!-- Icons (inline, no external files: the page's security policy only allows its own origin). -->
+  <svg class="sprite" aria-hidden="true">
+    <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></symbol>
+    <symbol id="i-sites" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></symbol>
+    <symbol id="i-setup" viewBox="0 0 24 24"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 3h7v7M21 3l-9 9M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></symbol>
+    <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></symbol>
+    <symbol id="i-logs" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></symbol>
+  </svg>
+
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview"><img src="/static/devctl.svg" alt="" width="34" height="34"><span>devctl</span></a>
+      <nav>
+        <a href="#overview" data-page="overview"><svg><use href="#i-overview"/></svg><span>Overview</span></a>
+        <a href="#sites" data-page="sites"><svg><use href="#i-sites"/></svg><span>Sites</span></a>
+        <a href="#databases" data-page="databases"><svg><use href="#i-db"/></svg><span>Databases</span></a>
+        <a href="#services" data-page="services"><svg><use href="#i-box"/></svg><span>Services</span></a>
+        <a href="#logs" data-page="logs"><svg><use href="#i-logs"/></svg><span>Logs</span></a>
+        <a href="#setup" data-page="setup"><svg><use href="#i-setup"/></svg><span>Setup</span></a>
+        <a href="#history" data-page="history"><svg><use href="#i-history"/></svg><span>History</span></a>
+        <a href="#settings" data-page="settings"><svg><use href="#i-settings"/></svg><span>Settings</span></a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="live" class="live" title="Live updates">connecting…</span>
+        <span class="muted small" id="ov-version-foot"></span>
+      </div>
+    </aside>
+
+    <main>
+      <section id="page-overview" class="page" hidden>
+        <header class="page-head">
+          <div><h1>Overview</h1><p class="subtitle">Everything devctl runs on this laptop, at a glance.</p></div>
+        </header>
+        <div class="cards stats">
+          <div class="card stat"><div class="label">devctl version</div><div class="value" id="ov-version">…</div></div>
+          <div class="card stat"><div class="label">Actions recorded</div><div class="value" id="ov-actions">…</div></div>
+          <div class="card stat"><div class="label">Alerts recorded</div><div class="value" id="ov-alerts">…</div></div>
+        </div>
+        <h2>Status</h2>
+        <div class="cards" id="ov-status"></div>
+        <h2>Recent activity</h2>
+        <div class="table-wrap">
+          <table class="table"><thead><tr><th>Time</th><th>From</th><th>What</th><th>Result</th></tr></thead>
+            <tbody id="ov-recent"></tbody></table>
+        </div>
+        <p class="empty" id="ov-recent-empty" hidden>Nothing yet. Actions from the terminal and the dashboard appear here live.</p>
+        <h2>Coming next</h2>
+        <div class="cards" id="ov-coming"></div>
+      </section>
+
+      <section id="page-sites" class="page" hidden>
+        <header class="page-head">
+          <div><h1>Sites</h1><p class="subtitle">Your projects, served at https://NAME.test.</p></div>
+          <div class="row-actions">
+            <button id="site-clone" class="ghost"><svg><use href="#i-github"/></svg>Clone from GitHub…</button>
+            <button id="site-new" class="primary"><svg><use href="#i-plus"/></svg>New site…</button>
+          </div>
+        </header>
+
+        <form id="site-form" class="card form reveal" hidden>
+          <h2>New site</h2>
+          <div class="grid2">
+            <label>Template <select name="template">
+              <option value="laravel-inertia-react" data-db="mysql postgres mariadb sqlite">Laravel + Inertia + React</option>
+              <option value="laravel-blade" data-db="mysql postgres mariadb sqlite">Laravel (Blade)</option>
+              <option value="laravel-api" data-db="mysql postgres mariadb sqlite">Laravel API (no front end)</option>
+              <option value="spring-boot" data-db="none mysql postgres">Spring Boot (Java 25, Maven)</option>
+              <option value="static" data-db="none">Static HTML/CSS/JS</option>
+              <option value="java" data-db="none">Plain Java (no website)</option>
+            </select></label>
+            <label>Name <input name="name" required pattern="[a-z][a-z0-9-]{0,30}[a-z0-9]" placeholder="shop" autocomplete="off" spellcheck="false">
+              <small class="muted">becomes https://<b id="site-form-host">name</b>.test</small></label>
+            <label>Category <select name="category"><option>personal</option><option>elden</option><option>school</option></select></label>
+            <label>Database <select name="engine"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL + pgvector</option><option value="mariadb">MariaDB</option><option value="sqlite">SQLite (file)</option><option value="none">None</option></select></label>
+          </div>
+          <p class="muted">Creates the project (Laravel: Composer and npm, a few minutes), its database and user if chosen, https://NAME.test and the web server's access. Your administrator password is asked once in a desktop dialog.</p>
+          <div class="actions"><button type="button" id="site-cancel" class="ghost">Cancel</button><button type="submit" class="primary">Create</button></div>
+        </form>
+
+        <form id="clone-form" class="card form reveal" hidden>
+          <h2>Clone from GitHub</h2>
+          <p id="clone-status" class="muted">Loading your repositories…</p>
+          <div class="grid2">
+            <div class="span2 repo-pick">
+              <label>Repository
+                <input type="search" id="repo-filter" placeholder="Search your repositories…" autocomplete="off" spellcheck="false"></label>
+              <button type="button" id="repo-refresh" class="ghost" title="Ask GitHub again">↻ Refresh</button>
+              <select name="repo" required size="7"></select>
+            </div>
+            <label>Site name <input name="name" pattern="[a-z][a-z0-9-]{0,30}[a-z0-9]" placeholder="(from the repository name)" autocomplete="off" spellcheck="false"></label>
+            <label>Category <select name="category"><option>elden</option><option>personal</option><option>school</option></select></label>
+            <fieldset class="dbset span2">
+              <legend>Database</legend>
+              <div class="grid2">
+                <label>Engine <select name="engine"><option value="auto">Detect from the project</option><option value="mysql">MySQL</option><option value="postgres">PostgreSQL + pgvector</option><option value="mariadb">MariaDB</option><option value="sqlite">SQLite (file)</option><option value="none">None</option></select></label>
+                <label>Fill it <select name="fill"><option value="migrate">Run the migrations</option><option value="import">Import a dump file</option><option value="none">Leave it empty</option></select></label>
+                <label class="span2 upload" hidden>Dump file (.sql, .sql.gz, .dump, .archive)
+                  <input type="file" name="dump" accept=".sql,.gz,.dump,.archive"></label>
+                <div class="span2 upload-progress" hidden><div class="progress"><span></span></div><small class="muted"></small></div>
+              </div>
+            </fieldset>
+          </div>
+          <p class="muted">Clones the repository, installs its dependencies once (Composer/npm run the repository's own scripts), creates its database and user, writes the connection into .env (Spring: devctl.env), then fills it as you choose.</p>
+          <div class="actions"><button type="button" id="clone-cancel" class="ghost">Cancel</button><button type="submit" class="primary">Clone</button></div>
+        </form>
+
+        <form id="db-form" class="card form reveal" hidden>
+          <h2>Database for <span id="db-form-site"></span></h2>
+          <input type="hidden" name="name">
+          <div class="grid2">
+            <fieldset class="dbset span2">
+              <legend>Database</legend>
+              <div class="grid2">
+                <label>Engine <select name="engine"><option value="auto">Detect from the project</option><option value="mysql">MySQL</option><option value="postgres">PostgreSQL + pgvector</option><option value="mariadb">MariaDB</option><option value="sqlite">SQLite (file)</option></select></label>
+                <label>Fill it <select name="fill"><option value="migrate">Run the migrations</option><option value="import">Import a dump file</option><option value="none">Leave it empty</option></select></label>
+                <label class="span2 upload" hidden>Dump file (.sql, .sql.gz, .dump, .archive)
+                  <input type="file" name="dump" accept=".sql,.gz,.dump,.archive"></label>
+                <div class="span2 upload-progress" hidden><div class="progress"><span></span></div><small class="muted"></small></div>
+              </div>
+            </fieldset>
+          </div>
+          <p class="muted">Creates the database and its user if needed (an existing one is reused), writes the connection into the project, then fills it as you choose.</p>
+          <div class="actions"><button type="button" id="db-cancel" class="ghost">Cancel</button><button type="submit" class="primary">Set up database</button></div>
+        </form>
+
+        <div id="job" class="card job reveal" hidden>
+          <div class="job-head"><h2 id="job-title"></h2><span id="job-state" class="pill"></span></div>
+          <div class="progress"><span></span></div>
+          <pre id="job-log"></pre>
+        </div>
+
+        <div class="table-wrap">
+          <table class="table sites"><thead><tr><th>Site</th><th>Category</th><th>Database</th><th>State</th><th></th></tr></thead>
+            <tbody id="site-rows"></tbody></table>
+        </div>
+        <p class="empty" id="site-empty" hidden>No sites yet. Create one with “New site…”.</p>
+      </section>
+
+      <section id="page-databases" class="page" hidden>
+        <header class="page-head">
+          <div><h1>Databases</h1><p class="subtitle">Shared servers on 127.0.0.1 (ports never change) and your databases.</p></div>
+          <button id="db-new" class="primary"><svg><use href="#i-plus"/></svg>New database…</button>
+        </header>
+        <form id="dbnew-form" class="card form reveal" hidden>
+          <h2>New database</h2>
+          <div class="grid2">
+            <label>Name <input name="name" required pattern="[a-z][a-z0-9_]{0,31}" placeholder="shop" autocomplete="off" spellcheck="false">
+              <small class="muted">lowercase letters, digits, _ · a user with the same name gets its own password</small></label>
+            <label>Engine <select name="engine"><option value="mysql">MySQL 8.4</option><option value="postgres">PostgreSQL 18 + pgvector</option><option value="mariadb">MariaDB 11.8</option><option value="mongodb">MongoDB 8.0</option></select></label>
+          </div>
+          <div class="actions"><button type="button" id="dbnew-cancel" class="ghost">Cancel</button><button type="submit" class="primary">Create</button></div>
+        </form>
+        <form id="dbimport-form" class="card form reveal" hidden>
+          <h2>Import into <span id="dbimport-name"></span></h2>
+          <input type="hidden" name="name">
+          <label>Dump file (.sql, .sql.gz, .dump, .archive) <input type="file" name="dump" accept=".sql,.gz,.dump,.archive" required></label>
+          <div class="upload-progress" hidden><div class="progress"><span></span></div><small class="muted"></small></div>
+          <p class="muted small">If the database already has tables you will be asked to type its name.</p>
+          <div class="actions"><button type="button" id="dbimport-cancel" class="ghost">Cancel</button><button type="submit" class="primary">Import</button></div>
+        </form>
+        <div id="creds" class="card reveal creds" hidden>
+          <div class="job-head"><h2>Connect to <span id="creds-name"></span></h2><button type="button" id="creds-close" class="ghost">Close</button></div>
+          <div class="kv" id="creds-rows"></div>
+          <p class="muted small">For TablePlus or any client. Contains a password: do not paste it into chats, tickets or commits.</p>
+        </div>
+        <h2>Servers</h2>
+        <div class="cards" id="db-servers"></div>
+        <p class="empty" id="db-servers-empty" hidden>No servers yet. Creating a database or a site starts one.</p>
+        <h2>Databases</h2>
+        <div class="table-wrap">
+          <table class="table"><thead><tr><th>Database</th><th>Server</th><th>Used by</th><th>Created</th><th></th></tr></thead><tbody id="db-rows"></tbody></table>
+        </div>
+        <p class="empty" id="db-empty" hidden>No databases yet.</p>
+      </section>
+
+      <section id="page-services" class="page" hidden>
+        <header class="page-head">
+          <div><h1>Services</h1><p class="subtitle">Started only when you ask. All on 127.0.0.1.</p></div>
+        </header>
+        <div class="cards services" id="svc-cards"></div>
+      </section>
+
+      <section id="page-logs" class="page" hidden>
+        <header class="page-head">
+          <div><h1>Logs</h1><p class="subtitle">What your sites, PHP and databases are saying.</p></div>
+        </header>
+        <form id="logs-form" class="filters">
+          <select name="site" id="logs-site"></select>
+          <select name="part"><option value="web">Web requests</option><option value="app">Application (Laravel)</option><option value="php">PHP errors</option><option value="db">Database server</option></select>
+          <select name="lines"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select>
+          <label class="check"><input type="checkbox" name="follow" checked> Follow</label>
+        </form>
+        <div class="card logs-card"><pre id="logs-out" class="logview"></pre></div>
+        <p class="empty" id="logs-empty" hidden>No sites yet.</p>
+      </section>
+
+      <section id="page-setup" class="page" hidden>
+        <header class="page-head">
+          <div><h1>Setup</h1><p class="subtitle">Connect devctl to your accounts. More services will appear here.</p></div>
+        </header>
+
+        <div class="setup-grid">
+          <div class="card setup-card" id="gh-card">
+            <div class="setup-head">
+              <svg class="setup-icon"><use href="#i-github"/></svg>
+              <div><h2>GitHub</h2><p class="muted small">Clone your private repositories, pull and push.</p></div>
+              <span id="gh-pill" class="pill">checking…</span>
+            </div>
+            <p id="gh-text" class="muted"></p>
+
+            <div id="gh-device" class="device reveal" hidden>
+              <p class="muted small">1. Copy this code &nbsp; 2. Open GitHub and paste it &nbsp; 3. Approve devctl's access</p>
+              <div class="code-row">
+                <code id="gh-code" class="device-code">····-····</code>
+                <button type="button" id="gh-copy" class="ghost"><svg><use href="#i-copy"/></svg>Copy</button>
+                <a id="gh-open" class="button primary" href="https://github.com/login/device" target="_blank" rel="noopener"><svg><use href="#i-external"/></svg>Open GitHub</a>
+              </div>
+              <div class="progress"><span></span></div>
+              <p class="muted small" id="gh-wait">Waiting for you to approve on github.com…</p>
+            </div>
+
+            <div class="actions left">
+              <button type="button" id="gh-install" class="primary" hidden>Install GitHub CLI</button>
+              <button type="button" id="gh-login" class="primary" hidden><svg><use href="#i-github"/></svg>Sign in with GitHub</button>
+              <button type="button" id="gh-logout" class="danger" hidden>Sign out</button>
+            </div>
+
+            <details id="gh-token-box" class="token-box" hidden>
+              <summary>Use a personal access token instead</summary>
+              <form id="gh-token-form" class="form-inline">
+                <p class="muted small">GitHub no longer accepts account passwords for git. Create a token at
+                  github.com → Settings → Developer settings → Personal access tokens (scopes: <code>repo</code>, <code>read:org</code>).
+                  It goes straight to the GitHub CLI, which keeps it in your system keyring.</p>
+                <input type="password" name="token" placeholder="ghp_… or github_pat_…" autocomplete="off" spellcheck="false" required>
+                <button type="submit" class="primary">Save token</button>
+              </form>
+            </details>
+          </div>
+
+          <form class="card setup-card" id="git-form">
+            <div class="setup-head">
+              <svg class="setup-icon"><use href="#i-history"/></svg>
+              <div><h2>Git identity</h2><p class="muted small">The name and email on your commits.</p></div>
+              <span id="git-pill" class="pill">checking…</span>
+            </div>
+            <label>Name <input name="name" required maxlength="100" autocomplete="name" placeholder="Your Name"></label>
+            <label>Email <input name="email" type="email" required autocomplete="email" placeholder="you@example.com"></label>
+            <p class="muted small">Use the email of your GitHub account (or its no-reply address) so commits are linked to you.</p>
+            <div class="actions left"><button type="submit" class="primary">Save</button></div>
+          </form>
+        </div>
+      </section>
+
+      <section id="page-history" class="page" hidden>
+        <header class="page-head">
+          <div><h1>History</h1><p class="subtitle">Every action from the terminal, the dashboard, the timer and git hooks.</p></div>
+          <button id="hist-clear" class="danger"><svg><use href="#i-trash"/></svg>Clear history…</button>
+        </header>
+        <form id="hist-filter" class="filters">
+          <select name="type"><option value="">All types</option><option value="action">Actions</option><option value="alert">Alerts</option></select>
+          <select name="source"><option value="">All sources</option><option value="cli">Terminal</option><option value="dashboard">Dashboard</option><option value="timer">Timer</option><option value="hook">Git hook</option></select>
+          <input name="q" type="search" placeholder="Search…" autocomplete="off">
+        </form>
+        <div class="table-wrap">
+          <table class="table"><thead><tr><th>Time</th><th>From</th><th>Type</th><th>What</th><th>Details</th><th>Result</th></tr></thead>
+            <tbody id="hist-rows"></tbody></table>
+        </div>
+        <p class="empty" id="hist-empty" hidden>No matching entries.</p>
+      </section>
+
+      <section id="page-settings" class="page" hidden>
+        <header class="page-head">
+          <div><h1>Settings</h1><p class="subtitle">Change them in <code>~/.config/devctl/devctl.conf</code> — see <code>devctl help config</code>.</p></div>
+        </header>
+        <div class="table-wrap">
+          <table class="table"><thead><tr><th>Setting</th><th>Value</th><th>From</th></tr></thead>
+            <tbody id="set-rows"></tbody></table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="confirm-dialog">
+    <form method="dialog" id="confirm-form">
+      <h2 id="confirm-title">Confirm</h2>
+      <p id="confirm-text"></p>
+      <label class="check" id="confirm-check-row" hidden><input type="checkbox" id="confirm-check"> <span id="confirm-check-label"></span></label>
+      <p class="muted small" id="confirm-check-note" hidden></p>
+      <label>Type <code id="confirm-expected"></code> to confirm
+        <input id="confirm-input" autocomplete="off" spellcheck="false"></label>
+      <p class="error" id="confirm-error" hidden></p>
+      <div class="actions">
+        <button value="cancel" formnovalidate class="ghost">Cancel</button>
+        <button id="confirm-ok" class="danger" value="ok" disabled>Confirm</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+</body>
+</html>

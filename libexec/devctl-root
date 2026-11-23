@@ -1,0 +1,576 @@
+#!/bin/bash
+# devctl-root — the only part of devctl that runs as root.
+#
+# Installed root-owned at /usr/local/libexec/devctl-root by `devctl root install`, and
+# started only through sudo (terminal) or pkexec (dashboard, graphical password prompt).
+#
+# Rules for this file:
+#   - self-contained: it never sources or runs anything from the user's devctl repo;
+#   - a fixed list of verbs; every argument checked against an allow-list;
+#   - no eval, no shell strings, fixed PATH, fixed locale;
+#   - every call (allowed or refused) is logged to the system journal (tag devctl-root).
+# Verbs are added by the modules that need them (hosts, caddy, selinux, docker, …).
+
+set -Eeuo pipefail
+shopt -s inherit_errexit
+umask 022
+export PATH=/usr/sbin:/usr/bin
+export LC_ALL=C
+
+readonly HELPER_VERSION=11
+readonly HELPER_PATH=/usr/local/libexec/devctl-root
+
+# sysexits.h codes, so devctl can tell "refused" from "failed".
+readonly EX_USAGE=64
+readonly EX_NOPERM=77
+
+CALLER_UID=""
+
+# Only runs as root are worth auditing; a normal user running the file can do nothing.
+journal() {
+  ((EUID == 0)) || return 0
+  logger -t devctl-root -p "auth.$1" -- "caller_uid=${CALLER_UID:-?} $2" 2>/dev/null || true
+}
+
+refuse() {
+  local code=$1
+  shift
+  printf 'devctl-root: %s\n' "$*" >&2
+  journal warning "refused: $*"
+  exit "$code"
+}
+
+# The real user behind sudo/pkexec. Root itself is refused: devctl acts for a user.
+caller_uid() {
+  local uid=${SUDO_UID:-${PKEXEC_UID:-}}
+  [[ $uid =~ ^[0-9]+$ ]] && ((uid != 0)) || return 1
+  printf '%s\n' "$uid"
+}
+
+# Refuse to run from anywhere a normal user could modify (e.g. the git repo).
+check_own_file() {
+  local self owner mode
+  self=$(readlink -f -- "${BASH_SOURCE[0]}")
+  [[ $self == "$HELPER_PATH" ]] || return 1
+  read -r owner mode < <(stat -c '%u %a' -- "$self")
+  ((owner == 0 && (8#$mode & 8#022) == 0))
+}
+
+# ---- verbs ------------------------------------------------------------------------------
+
+verb_version() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: version"
+  printf 'devctl-root %s\n' "$HELPER_VERSION"
+}
+
+# Proves the helper really runs as root, for whom, and in which SELinux context.
+verb_self_test() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: self-test"
+  printf 'euid=%s caller_uid=%s selinux=%s\n' "$EUID" "$CALLER_UID" "$(id -Z 2>/dev/null || printf 'n/a')"
+}
+
+# Static hostname (lowercase DNS label, e.g. zaitoune-laptop).
+valid_hostname() { [[ $1 =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; }
+
+verb_hostname_set() {
+  if (($# != 1)) || ! valid_hostname "$1"; then
+    refuse "$EX_USAGE" "usage: hostname-set NAME (lowercase letters, digits, hyphens)"
+  fi
+  hostnamectl set-hostname --static -- "$1"
+}
+
+# Docker must not start at boot; devctl starts it on demand. Does not stop a running daemon.
+verb_docker_boot_disable() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: docker-boot-disable"
+  systemctl disable docker.service docker.socket
+}
+
+# Docker's default pools fall back to 192.168.x.x once 172.17-31 are used up, which can
+# collide with VMware (vmnet) or the LAN. Pin them to 172.20.0.0/14 in /24 networks.
+# Only creates the file: an existing daemon.json is never rewritten.
+readonly DOCKER_DAEMON_JSON=/etc/docker/daemon.json
+verb_docker_address_pools() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: docker-address-pools"
+  [[ ! -e $DOCKER_DAEMON_JSON ]] || refuse "$EX_USAGE" "$DOCKER_DAEMON_JSON already exists; edit it by hand"
+  install -d -m 0755 /etc/docker
+  printf '%s\n' '{' '  "default-address-pools": [{"base": "172.20.0.0/14", "size": 24}]' '}' >"$DOCKER_DAEMON_JSON.devctl-new"
+  chmod 0644 "$DOCKER_DAEMON_JSON.devctl-new"
+  mv -T -- "$DOCKER_DAEMON_JSON.devctl-new" "$DOCKER_DAEMON_JSON"
+  restorecon -- "$DOCKER_DAEMON_JSON" 2>/dev/null || true
+}
+
+# LLMNR answers name lookups from anyone on the network (spoofing risk on public Wi-Fi).
+# A global "LLMNR=no" in systemd-resolved overrides every network link.
+readonly LLMNR_DROPIN=/etc/systemd/resolved.conf.d/90-devctl-llmnr.conf
+verb_llmnr_disable() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: llmnr-disable"
+  install -d -m 0755 /etc/systemd/resolved.conf.d
+  printf '%s\n' '# Written by devctl (devctl doctor): disable LLMNR on all networks.' '[Resolve]' 'LLMNR=no' >"$LLMNR_DROPIN"
+  chmod 0644 "$LLMNR_DROPIN"
+  restorecon -- "$LLMNR_DROPIN" 2>/dev/null || true
+  systemctl restart systemd-resolved.service
+}
+
+# Packages devctl may install, from Fedora's own repositories only. Adding a package here
+# is a reviewed code change, never a runtime decision.
+readonly ALLOWED_PACKAGES=" nss-tools caddy php-fpm php-sodium uv gh java-25-openjdk-devel "
+verb_pkg_install() {
+  (($# >= 1)) || refuse "$EX_USAGE" "usage: pkg-install PACKAGE..."
+  local pkg
+  for pkg; do
+    [[ $pkg =~ ^[a-z0-9][a-z0-9.+-]*$ && $ALLOWED_PACKAGES == *" $pkg "* ]] ||
+      refuse "$EX_USAGE" "package '${pkg//[^a-z0-9.+-]/?}' is not on devctl's allow-list"
+  done
+  dnf install -y --disablerepo='*' --enablerepo=fedora --enablerepo=updates -- "$@"
+}
+
+# Docker runs only when devctl needs it. Starting the service also starts its socket.
+verb_docker_start() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: docker-start"
+  systemctl start docker.service
+}
+
+# Stop the socket too: while docker.socket is active, any docker command would restart the
+# daemon without going through devctl.
+verb_docker_stop() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: docker-stop"
+  systemctl stop docker.socket docker.service
+}
+
+# ---- web server (Caddy), ADR-0023 ---------------------------------------------------------
+
+readonly CADDY_DIR=/etc/caddy
+readonly CADDY_SITES=/etc/caddy/devctl
+readonly CADDY_LAST_GOOD=/etc/caddy/devctl.last-good
+readonly CADDY_DROPIN=/etc/systemd/system/caddy.service.d/devctl.conf
+readonly CADDY_CA=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt
+readonly CA_ANCHOR=/etc/pki/ca-trust/source/anchors/devctl-caddy-local.crt
+readonly VITE_PORTS=44300-44399
+
+# The caller's home, from the system user database (never from the environment).
+caller_home() {
+  local home
+  home=$(getent passwd "$CALLER_UID" | cut -d: -f6)
+  [[ $home == /* && -d $home ]] || refuse "$EX_NOPERM" "cannot find the home folder of uid $CALLER_UID"
+  printf '%s\n' "$home"
+}
+
+# SELinux: confine Caddy like Apache, allow proxying to local apps and reaching home folders.
+verb_web_selinux_setup() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: web-selinux-setup"
+  local spec
+  for spec in "httpd_exec_t:/usr/bin/caddy" "httpd_config_t:/etc/caddy(/.*)?" \
+    "httpd_var_lib_t:/var/lib/caddy(/.*)?" "httpd_var_run_t:/run/caddy(/.*)?"; do
+    semanage fcontext -a -t "${spec%%:*}" "${spec#*:}" 2>/dev/null ||
+      semanage fcontext -m -t "${spec%%:*}" "${spec#*:}"
+  done
+  restorecon -RF /usr/bin/caddy /etc/caddy /var/lib/caddy
+  [[ -d /run/caddy ]] && restorecon -RF /run/caddy
+  setsebool -P httpd_can_network_connect=on httpd_enable_homedirs=on
+  semanage port -a -t http_port_t -p tcp "$VITE_PORTS" 2>/dev/null ||
+    semanage port -m -t http_port_t -p tcp "$VITE_PORTS"
+}
+
+# Base configuration: devctl's Caddyfile, admin API on a unix socket, sites in CADDY_SITES.
+verb_caddy_setup() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: caddy-setup"
+  [[ -x /usr/bin/caddy ]] || refuse "$EX_USAGE" "caddy is not installed"
+  if [[ -f $CADDY_DIR/Caddyfile && ! -e $CADDY_DIR/Caddyfile.devctl-orig ]] &&
+    ! grep -q 'Managed by devctl' "$CADDY_DIR/Caddyfile"; then
+    cp -a -- "$CADDY_DIR/Caddyfile" "$CADDY_DIR/Caddyfile.devctl-orig"
+  fi
+  install -d -m 0755 "$CADDY_SITES"
+  printf '%s\n' '# devctl: per-site files are added here by devctl (helper caddy-apply).' \
+    >"$CADDY_SITES/00-devctl.caddy"
+  cat >"$CADDY_DIR/Caddyfile.devctl-new" <<'CADDYFILE'
+# Managed by devctl (helper caddy-setup). Do not edit: sites live in /etc/caddy/devctl/.
+{
+	admin unix//run/caddy/admin.sock
+	local_certs
+	skip_install_trust
+	default_bind 127.0.0.1 [::1]
+}
+
+import /etc/caddy/devctl/*.caddy
+CADDYFILE
+  chmod 0644 "$CADDY_DIR/Caddyfile.devctl-new"
+  mv -T -- "$CADDY_DIR/Caddyfile.devctl-new" "$CADDY_DIR/Caddyfile"
+  # Fedora's unit sets ProtectHome=true (all of /home hidden). Keep the sandbox, but show
+  # Caddy exactly one folder of the caller's home, read-only: the projects folder.
+  local projects
+  projects="$(caller_home)/Desktop/projects"
+  [[ -d $projects && $projects =~ ^/[A-Za-z0-9/._-]+$ ]] || refuse "$EX_USAGE" "no projects folder at $projects"
+  install -d -m 0755 "${CADDY_DROPIN%/*}"
+  printf '%s\n' '# devctl: admin socket folder; Caddy sees only the projects folder of your home, read-only.' \
+    '[Service]' 'RuntimeDirectory=caddy' 'RuntimeDirectoryMode=0750' \
+    'ProtectHome=tmpfs' "BindReadOnlyPaths=$projects" >"$CADDY_DROPIN"
+  chmod 0644 "$CADDY_DROPIN"
+  restorecon -RF "$CADDY_DIR" "${CADDY_DROPIN%/*}"
+  systemctl daemon-reload
+  # Sandbox changes need a restart (a reload keeps the old mounts).
+  if systemctl is-active --quiet caddy.service; then systemctl restart caddy.service; fi
+}
+
+# caddy__validate — validate the full configuration without touching caddy's storage.
+# Prints Caddy's output only when the configuration is rejected.
+caddy__validate() {
+  local scratch out rc=0
+  scratch=$(mktemp -d)
+  out=$(XDG_DATA_HOME=$scratch XDG_CONFIG_HOME=$scratch HOME=$scratch \
+    caddy validate --config "$CADDY_DIR/Caddyfile" --adapter caddyfile 2>&1) || rc=$?
+  rm -rf -- "$scratch"
+  ((rc == 0)) || printf '%s\n' "$out" >&2
+  return "$rc"
+}
+
+caddy__reload_if_running() {
+  systemctl is-active --quiet caddy.service || return 0
+  systemctl reload caddy.service
+}
+
+# Make /etc/caddy/devctl mirror the caller's staging folder (the desired state), validate,
+# reload; on any failure restore the previous files. Keeps the last good set for rollback.
+verb_caddy_apply() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: caddy-apply"
+  if [[ ! -f $CADDY_DIR/Caddyfile ]] || ! grep -q 'Managed by devctl' "$CADDY_DIR/Caddyfile"; then
+    refuse "$EX_USAGE" "run caddy-setup first"
+  fi
+  local staging new backup f name owner size
+  staging="$(caller_home)/.local/share/devctl/caddy/sites"
+  [[ -d $staging && ! -L $staging ]] || refuse "$EX_USAGE" "no staging folder $staging"
+  [[ $(stat -c %u -- "$staging") == "$CALLER_UID" ]] || refuse "$EX_NOPERM" "$staging is not yours"
+  new=$(mktemp -d "$CADDY_DIR/.devctl-new.XXXXXX")
+  cp -- "$CADDY_SITES/00-devctl.caddy" "$new/"
+  shopt -s nullglob
+  for f in "$staging"/*; do
+    name=${f##*/}
+    read -r owner size < <(stat -c '%u %s' -- "$f")
+    if [[ ! $name =~ ^[a-z][a-z0-9-]{0,62}\.caddy$ || -L $f || ! -f $f || $owner != "$CALLER_UID" ]] || ((size > 65536)); then
+      rm -rf -- "$new"
+      refuse "$EX_USAGE" "unexpected file in staging: ${name//[^A-Za-z0-9._-]/?}"
+    fi
+    cp -- "$f" "$new/$name"
+  done
+  chmod 0644 "$new"/*
+  chmod 0755 "$new"
+  backup=$(mktemp -d "$CADDY_DIR/.devctl-old.XXXXXX")
+  rmdir -- "$backup"
+  mv -T -- "$CADDY_SITES" "$backup"
+  mv -T -- "$new" "$CADDY_SITES"
+  restorecon -RF "$CADDY_SITES"
+  if ! caddy__validate || ! caddy__reload_if_running; then
+    rm -rf -- "$CADDY_SITES"
+    mv -T -- "$backup" "$CADDY_SITES"
+    caddy__reload_if_running || true
+    refuse 1 "new web server configuration rejected; previous configuration restored"
+  fi
+  rm -rf -- "$CADDY_LAST_GOOD"
+  mv -T -- "$backup" "$CADDY_LAST_GOOD"
+}
+
+# Go back to the previous working set of sites.
+verb_caddy_rollback() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: caddy-rollback"
+  [[ -d $CADDY_LAST_GOOD ]] || refuse "$EX_USAGE" "no previous configuration to go back to"
+  local tmp
+  tmp=$(mktemp -d "$CADDY_DIR/.devctl-old.XXXXXX")
+  rmdir -- "$tmp"
+  mv -T -- "$CADDY_SITES" "$tmp"
+  mv -T -- "$CADDY_LAST_GOOD" "$CADDY_SITES"
+  mv -T -- "$tmp" "$CADDY_LAST_GOOD"
+  caddy__validate && caddy__reload_if_running
+}
+
+verb_caddy_start() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: caddy-start"
+  systemctl start caddy.service
+}
+
+verb_caddy_stop() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: caddy-stop"
+  systemctl stop caddy.service
+}
+
+# Public certificate of Caddy's local CA (created on Caddy's first start).
+verb_ca_export() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: ca-export"
+  [[ -f $CADDY_CA ]] || refuse "$EX_USAGE" "Caddy has not created its local CA yet; start Caddy once"
+  cat -- "$CADDY_CA"
+}
+
+# Trust the local CA system-wide (curl, PHP, Python, Java on Fedora, Firefox via p11-kit).
+verb_ca_trust_system() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: ca-trust-system"
+  [[ -f $CADDY_CA ]] || refuse "$EX_USAGE" "Caddy has not created its local CA yet; start Caddy once"
+  install -m 0644 -T -- "$CADDY_CA" "$CA_ANCHOR"
+  restorecon -F "$CA_ANCHOR" 2>/dev/null || true
+  update-ca-trust extract
+}
+
+# ---- PHP-FPM ------------------------------------------------------------------------------
+
+# PHP versions: "" = Fedora's PHP (system); 8.x = Remi's side-by-side packages (ADR-0020).
+# fpm__paths [VERSION] sets FPM_POOL, FPM_SOCKET, FPM_BIN, FPM_UNIT.
+valid_php_version() { [[ $1 =~ ^8\.[1-4]$ ]]; }
+fpm__paths() {
+  if [[ -z ${1:-} ]]; then
+    FPM_POOL=/etc/php-fpm.d/devctl.conf FPM_SOCKET=/run/php-fpm/devctl.sock
+    FPM_BIN=/usr/sbin/php-fpm FPM_UNIT=php-fpm.service
+  else
+    valid_php_version "$1" || refuse "$EX_USAGE" "unsupported PHP version (8.1-8.4)"
+    local v=php${1//./}
+    FPM_POOL=/etc/opt/remi/$v/php-fpm.d/devctl.conf FPM_SOCKET=/var/opt/remi/$v/run/php-fpm/devctl.sock
+    FPM_BIN=/opt/remi/$v/root/usr/sbin/php-fpm FPM_UNIT=$v-php-fpm.service
+  fi
+}
+
+# devctl's PHP-FPM pool: PHP for devctl sites runs as the calling user (it owns the
+# projects); only Caddy may use the socket. PHP-FPM stays confined by SELinux (httpd_t).
+verb_php_fpm_setup() {
+  (($# <= 1)) || refuse "$EX_USAGE" "usage: php-fpm-setup [VERSION]"
+  local FPM_POOL FPM_SOCKET FPM_BIN FPM_UNIT
+  fpm__paths "${1:-}"
+  [[ -x $FPM_BIN ]] || refuse "$EX_USAGE" "php-fpm ${1:-} is not installed"
+  local user
+  user=$(getent passwd "$CALLER_UID" | cut -d: -f1)
+  [[ $user =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || refuse "$EX_NOPERM" "unexpected user name for uid $CALLER_UID"
+  getent passwd caddy >/dev/null || refuse "$EX_USAGE" "user caddy missing (run web setup first)"
+  cat >"$FPM_POOL.devctl-new" <<POOL
+; Managed by devctl (helper php-fpm-setup). Do not edit.
+; PHP for devctl sites runs as $user; only Caddy may connect to the socket.
+[devctl]
+user = $user
+group = $user
+listen = $FPM_SOCKET
+listen.owner = caddy
+listen.group = caddy
+listen.mode = 0660
+pm = ondemand
+pm.max_children = 10
+pm.process_idle_timeout = 60s
+catch_workers_output = yes
+php_admin_flag[log_errors] = on
+; /var/log/php-fpm is writable only by apache, not by this pool's user: log to the
+; journal instead (read with: devctl logs SITE --php).
+php_admin_value[error_log] = syslog
+php_admin_value[syslog.ident] = devctl-php
+POOL
+  chmod 0644 "$FPM_POOL.devctl-new"
+  mv -T -- "$FPM_POOL.devctl-new" "$FPM_POOL"
+  restorecon -F "$FPM_POOL" 2>/dev/null || true
+  if ! "$FPM_BIN" -t 2>&1; then
+    rm -f -- "$FPM_POOL"
+    refuse 1 "PHP-FPM rejected the pool; removed it"
+  fi
+  if systemctl is-active --quiet "$FPM_UNIT"; then systemctl reload "$FPM_UNIT"; fi
+}
+
+verb_php_fpm_start() {
+  (($# <= 1)) || refuse "$EX_USAGE" "usage: php-fpm-start [VERSION]"
+  local FPM_POOL FPM_SOCKET FPM_BIN FPM_UNIT
+  fpm__paths "${1:-}"
+  systemctl start "$FPM_UNIT"
+}
+
+verb_php_fpm_stop() {
+  (($# <= 1)) || refuse "$EX_USAGE" "usage: php-fpm-stop [VERSION]"
+  local FPM_POOL FPM_SOCKET FPM_BIN FPM_UNIT
+  fpm__paths "${1:-}"
+  systemctl stop "$FPM_UNIT"
+}
+
+# ---- Remi (other PHP versions side by side), ADR-0020 ----------------------------------------
+# The release package is not signed, so its checksum is pinned here; the signing key it brings
+# is only trusted if its fingerprint is Remi's published 2026 key (KEYS.txt: "used for
+# Fedora 44-45"). Both verified 2026-11-11. A new remi-release = a reviewed devctl change.
+readonly REMI_RELEASE_URL=https://rpms.remirepo.net/fedora/remi-release-44.rpm
+readonly REMI_RELEASE_SHA256=33ec50be86b32e78fdb0b948a2c39b657c51c1391d3203972426c055c8e4860f
+readonly REMI_KEY_FPR=2E375FE24EDFF0F2E0D8E165ED5B58C5BEFA00E2
+readonly REMI_KEY_FILE=/etc/pki/rpm-gpg/RPM-GPG-KEY-remi2026
+
+verb_remi_enable() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: remi-enable"
+  # shellcheck disable=SC1091  # os-release is a plain key=value file
+  [[ $(. /etc/os-release && printf '%s %s' "$ID" "$VERSION_ID") == "fedora 44" ]] ||
+    refuse "$EX_USAGE" "devctl pins Remi's release package for Fedora 44 only"
+  if ! rpm -q remi-release >/dev/null 2>&1; then
+    local dir sum
+    dir=$(mktemp -d)
+    curl -fsS --proto '=https' --max-time 120 -o "$dir/remi-release.rpm" -- "$REMI_RELEASE_URL" ||
+      { rm -rf -- "$dir"; refuse 1 "could not download $REMI_RELEASE_URL"; }
+    sum=$(sha256sum -- "$dir/remi-release.rpm" | cut -d' ' -f1)
+    if [[ $sum != "$REMI_RELEASE_SHA256" ]]; then
+      rm -rf -- "$dir"
+      refuse 1 "remi-release checksum mismatch (got $sum): not installed"
+    fi
+    dnf install -y --disablerepo='*' -- "$dir/remi-release.rpm" || { rm -rf -- "$dir"; refuse 1 "could not install remi-release"; }
+    rm -rf -- "$dir"
+  fi
+  local fpr
+  fpr=$(gpg --show-keys --with-colons -- "$REMI_KEY_FILE" 2>/dev/null | awk -F: '$1 == "fpr" {print $10; exit}')
+  if [[ $fpr != "$REMI_KEY_FPR" ]]; then
+    dnf remove -y remi-release >/dev/null 2>&1 || true
+    refuse 1 "Remi's signing key has an unexpected fingerprint (${fpr:-none}); repository removed"
+  fi
+  rpm --import -- "$REMI_KEY_FILE"
+}
+
+# Install PHP VERSION from Remi with the extensions Laravel needs, labelled for SELinux so its
+# PHP-FPM is confined like Fedora's (httpd_t) and confined Caddy can use its socket.
+verb_php_version_install() {
+  if (($# != 1)) || ! valid_php_version "$1"; then refuse "$EX_USAGE" "usage: php-version-install 8.1|8.2|8.3|8.4"; fi
+  rpm -q remi-release >/dev/null 2>&1 || refuse "$EX_USAGE" "Remi is not enabled (remi-enable)"
+  local v=php${1//./} ext spec
+  local -a pkgs=()
+  for ext in cli fpm bcmath gd intl mbstring mysqlnd opcache pdo pecl-zip pgsql process sodium xml; do
+    pkgs+=("$v-php-$ext")
+  done
+  dnf install -y --disablerepo='*' --enablerepo=fedora --enablerepo=updates --enablerepo=remi -- "${pkgs[@]}"
+  # Remi's packages register an SELinux equivalence (/opt/remi/phpXY/root = /), which already
+  # gives these paths the right types; add a rule only where the policy's label is wrong.
+  local type path rule
+  for spec in "httpd_exec_t|/opt/remi/$v/root/usr/sbin/php-fpm|/opt/remi/$v/root/usr/sbin/php-fpm" \
+    "httpd_var_run_t|/var/opt/remi/$v/run/php-fpm|/var/opt/remi/$v/run/php-fpm(/.*)?" \
+    "httpd_log_t|/var/opt/remi/$v/log/php-fpm|/var/opt/remi/$v/log/php-fpm(/.*)?"; do
+    IFS='|' read -r type path rule <<<"$spec"
+    [[ $(matchpathcon -n -- "$path" 2>/dev/null) == *":$type:"* ]] && continue
+    semanage fcontext -a -t "$type" "$rule" 2>/dev/null || semanage fcontext -m -t "$type" "$rule"
+  done
+  restorecon -RF "/opt/remi/$v/root/usr/sbin/php-fpm" "/var/opt/remi/$v/run" "/var/opt/remi/$v/log"
+  local label
+  label=$(stat -c %C -- "/opt/remi/$v/root/usr/sbin/php-fpm")
+  [[ $label == *:httpd_exec_t:* ]] || refuse 1 "PHP-FPM $1 is not labelled httpd_exec_t ($label); it would run unconfined"
+}
+
+# ---- project SELinux labels (ADR-0023) -------------------------------------------------------
+
+# project__path PATH — canonical project folder: inside the caller's home (never the home
+# itself), a real folder owned by the caller, plain characters only. Prints it.
+project__path() {
+  local home path
+  home=$(caller_home)
+  [[ $1 =~ ^/[A-Za-z0-9/._-]+$ && $1 != *..* ]] || refuse "$EX_USAGE" "unsupported project path"
+  path=$(realpath -e -- "$1" 2>/dev/null) || refuse "$EX_USAGE" "project folder does not exist"
+  [[ $path == "$home"/*/* && -d $path && ! -L $1 ]] || refuse "$EX_NOPERM" "project must be a folder inside your home"
+  [[ $(stat -c %u -- "$path") == "$CALLER_UID" ]] || refuse "$EX_NOPERM" "project folder is not yours"
+  printf '%s\n' "$path"
+}
+
+# Web servers (Caddy, PHP-FPM; both httpd_t) may read the project and write only Laravel's
+# storage/ and bootstrap/cache/. Your own tools are not affected by these labels.
+verb_project_label() {
+  (($# == 1)) || refuse "$EX_USAGE" "usage: project-label PATH"
+  local path spec
+  path=$(project__path "$1")
+  for spec in "httpd_sys_content_t:$path(/.*)?" "httpd_sys_rw_content_t:$path/storage(/.*)?" \
+    "httpd_sys_rw_content_t:$path/bootstrap/cache(/.*)?"; do
+    semanage fcontext -a -t "${spec%%:*}" "${spec#*:}" 2>/dev/null ||
+      semanage fcontext -m -t "${spec%%:*}" "${spec#*:}"
+  done
+  restorecon -RF -- "$path"
+}
+
+# Remove the rules and give the files their normal home-folder labels back.
+verb_project_unlabel() {
+  (($# == 1)) || refuse "$EX_USAGE" "usage: project-unlabel PATH"
+  local path spec
+  path=$(project__path "$1")
+  for spec in "$path(/.*)?" "$path/storage(/.*)?" "$path/bootstrap/cache(/.*)?"; do
+    semanage fcontext -d "$spec" 2>/dev/null || true
+  done
+  restorecon -RF -- "$path"
+}
+
+# ---- local names (/etc/hosts), ADR-0004 ------------------------------------------------------
+
+readonly HOSTS_FILE=/etc/hosts
+readonly HOSTS_BEGIN='# >>> devctl managed block — do not edit by hand >>>'
+readonly HOSTS_END='# <<< devctl managed block <<<'
+
+# A local name: exactly label.suffix, lowercase (e.g. shop.test).
+valid_local_name() { [[ $1 =~ ^[a-z][a-z0-9-]{0,62}\.[a-z][a-z0-9-]{0,62}$ ]]; }
+
+# Rewrite only devctl's block in /etc/hosts from the caller's list (one name per line,
+# ~/.local/share/devctl/hosts). Every name is checked; lines outside the block are kept
+# byte for byte; a backup is kept as /etc/hosts.devctl.bak.
+verb_hosts_apply() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: hosts-apply"
+  local list name tmp
+  local -a names=()
+  list="$(caller_home)/.local/share/devctl/hosts"
+  if [[ -e $list ]]; then
+    [[ -f $list && ! -L $list && $(stat -c %u -- "$list") == "$CALLER_UID" ]] || refuse "$EX_NOPERM" "$list is not a regular file of yours"
+    while IFS= read -r name || [[ -n $name ]]; do
+      [[ -z $name ]] && continue
+      valid_local_name "$name" || refuse "$EX_USAGE" "invalid name in $list: ${name//[^a-z0-9.-]/?}"
+      names+=("$name")
+    done <"$list"
+  fi
+  ((${#names[@]} <= 500)) || refuse "$EX_USAGE" "too many names"
+  tmp=$(mktemp /etc/.hosts.devctl.XXXXXX)
+  awk -v b="$HOSTS_BEGIN" -v e="$HOSTS_END" '$0 == b {skip = 1; next} $0 == e {skip = 0; next} !skip' "$HOSTS_FILE" >"$tmp"
+  if ((${#names[@]})); then
+    {
+      printf '%s\n' "$HOSTS_BEGIN"
+      for name in "${names[@]}"; do printf '127.0.0.1 %s\n::1       %s\n' "$name" "$name"; done
+      printf '%s\n' "$HOSTS_END"
+    } >>"$tmp"
+  fi
+  cp -a -- "$HOSTS_FILE" "$HOSTS_FILE.devctl.bak"
+  chmod 0644 "$tmp"
+  mv -T -- "$tmp" "$HOSTS_FILE"
+  restorecon -F "$HOSTS_FILE" 2>/dev/null || true
+}
+
+# Read-only: listening TCP sockets with their processes (needs root to see other users').
+verb_listeners() {
+  (($# == 0)) || refuse "$EX_USAGE" "usage: listeners"
+  ss -ltnpH
+}
+
+# ---- main -------------------------------------------------------------------------------
+
+main() {
+  ((EUID == 0)) || refuse "$EX_NOPERM" "must run as root, through sudo or pkexec"
+  CALLER_UID=$(caller_uid) || refuse "$EX_NOPERM" "must be started by a normal user through sudo or pkexec"
+  check_own_file || refuse "$EX_NOPERM" "must be run from $HELPER_PATH, owned by root and not writable by others"
+  (($#)) || refuse "$EX_USAGE" "usage: devctl-root VERB [ARGS...]"
+
+  local verb=$1
+  shift
+  case $verb in
+    version) verb_version "$@" ;;
+    self-test) verb_self_test "$@" ;;
+    hostname-set) verb_hostname_set "$@" ;;
+    docker-boot-disable) verb_docker_boot_disable "$@" ;;
+    docker-start) verb_docker_start "$@" ;;
+    docker-stop) verb_docker_stop "$@" ;;
+    docker-address-pools) verb_docker_address_pools "$@" ;;
+    llmnr-disable) verb_llmnr_disable "$@" ;;
+    pkg-install) verb_pkg_install "$@" ;;
+    listeners) verb_listeners "$@" ;;
+    web-selinux-setup) verb_web_selinux_setup "$@" ;;
+    caddy-setup) verb_caddy_setup "$@" ;;
+    caddy-apply) verb_caddy_apply "$@" ;;
+    caddy-rollback) verb_caddy_rollback "$@" ;;
+    caddy-start) verb_caddy_start "$@" ;;
+    caddy-stop) verb_caddy_stop "$@" ;;
+    ca-export) verb_ca_export "$@" ;;
+    ca-trust-system) verb_ca_trust_system "$@" ;;
+    hosts-apply) verb_hosts_apply "$@" ;;
+    php-fpm-setup) verb_php_fpm_setup "$@" ;;
+    remi-enable) verb_remi_enable "$@" ;;
+    php-version-install) verb_php_version_install "$@" ;;
+    project-label) verb_project_label "$@" ;;
+    project-unlabel) verb_project_unlabel "$@" ;;
+    php-fpm-start) verb_php_fpm_start "$@" ;;
+    php-fpm-stop) verb_php_fpm_stop "$@" ;;
+    *) refuse "$EX_USAGE" "unknown verb '${verb//[^a-z0-9-]/?}'" ;;
+  esac
+  journal info "ok: $verb ${*//[^A-Za-z0-9._ -]/?}"
+}
+
+# Sourcing this file (in tests) only defines functions.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Lets the devctl dashboard run /usr/local/libexec/devctl-root through pkexec, which shows
+     the desktop's administrator password dialog. The password never passes through the
+     browser. auth_admin_keep: like sudo, the password is remembered for a few minutes, so
+     one action with several admin steps asks once. Installed by `devctl root install`. -->
+<policyconfig>
+  <vendor>devctl</vendor>
+  <action id="local.devctl.root">
+    <description>Run devctl administrative tasks</description>
+    <message>devctl needs administrator rights to change system settings (hosts file, web server, services).</message>
+    <icon_name>devctl</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/libexec/devctl-root</annotate>
+  </action>
+</policyconfig>

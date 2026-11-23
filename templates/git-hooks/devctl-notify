@@ -1,0 +1,11 @@
+#!/bin/sh
+# Added by devctl: after a pull or a branch switch, only tell you; you decide what to run.
+# post-checkout gets "<old> <new> <1 if branch checkout>"; post-merge gets "<squash flag>".
+case "$(basename "$0")" in
+  post-checkout) [ "$3" = 1 ] || exit 0; what="Switched branch" ;;
+  *) what="Pulled changes" ;;
+esac
+command -v notify-send >/dev/null 2>&1 || exit 0
+notify-send --app-name=devctl "devctl: $(basename "$(git rev-parse --show-toplevel)")" \
+  "$what. You may need: composer install, npm install, php artisan migrate." 2>/dev/null || true
+exit 0

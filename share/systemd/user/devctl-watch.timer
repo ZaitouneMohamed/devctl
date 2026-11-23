@@ -1,0 +1,12 @@
+# Installed by `devctl watch enable` (ADR-0010).
+[Unit]
+Description=devctl background checks every 30 minutes
+
+[Timer]
+OnStartupSec=5min
+OnUnitActiveSec=30min
+RandomizedDelaySec=2min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

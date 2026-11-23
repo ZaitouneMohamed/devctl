@@ -1,0 +1,10 @@
+# Installed by `devctl watch enable` (ADR-0010). Short checks; never starts services.
+[Unit]
+Description=devctl background checks (disk, crashed containers, image updates)
+
+[Service]
+Type=oneshot
+Environment=DEVCTL_SOURCE=timer
+ExecStart=@DEVCTL_BIN@ --quiet watch tick
+Nice=10
+IOSchedulingClass=idle
